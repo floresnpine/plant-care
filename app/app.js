@@ -356,6 +356,35 @@ function viewPlant(id) {
   </div>`;
 }
 
+// Fertilizing schedules are usually weeks apart, so its stepper moves a week at a time past two weeks.
+const stepFor = (type, v, delta) => (type === 'fert' && (delta > 0 ? v >= 14 : v > 14) ? 7 : 1);
+
+function schedBlock(type, value, lastRow) {
+  const field = TASKS[type].every;
+  const on = type === 'water' || value > 0;
+  const days = value > 0 ? value : 28;
+  return `
+    <div class="sched ${type}" data-type="${type}">
+      <div class="group-title">${icon(TASKS[type].icon)}${type === 'water' ? 'Watering' : 'Fertilizing'}</div>
+      <div class="group">
+        ${type === 'fert' ? `<label class="row"><span>Reminders</span><input type="checkbox" class="switch" name="fertOn" ${on ? 'checked' : ''}></label>` : ''}
+        <div class="row" data-when-on ${on ? '' : 'hidden'}><span>Every</span>
+          <div class="stepper"><button type="button" data-act="step" data-delta="-1" aria-label="Fewer days">−</button><b>${days} days</b><button type="button" data-act="step" data-delta="1" aria-label="More days">+</button></div>
+          <input type="hidden" name="${field}" value="${days}"></div>
+        ${lastRow ? `<label class="row" data-when-on ${on ? '' : 'hidden'}>${lastRow}</label>` : ''}
+      </div>
+      ${type === 'fert' ? '<p class="hint">Turn off for plants that don\'t need feeding.</p>' : ''}
+    </div>`;
+}
+
+function stepSched(block, delta) {
+  const input = block.querySelector('input[type=hidden]');
+  const v = Number(input.value);
+  const next = Math.min(365, Math.max(1, v + delta * stepFor(block.dataset.type, v, delta)));
+  input.value = next;
+  block.querySelector('.stepper b').textContent = `${next} day${next === 1 ? '' : 's'}`;
+}
+
 function viewEdit(id) {
   const p = id ? state.plants.find(x => x.id === id) : null;
   if (id && !p) return viewMissing();
@@ -365,19 +394,10 @@ function viewEdit(id) {
   <form id="plant-form" class="form" autocomplete="off">
     ${p ? '' : `<button type="button" class="photo-pick" data-act="pick-cover"><span class="pp-inner">${icon('camera')}<span>Add a photo</span></span></button>`}
     <label>Name<input name="name" required maxlength="60" placeholder="Monstera" value="${esc(p?.name)}"></label>
-    <label>Where it lives <span class="opt">optional</span><input name="location" maxlength="60" placeholder="Living room, east window" value="${esc(p?.location)}"></label>
-    <fieldset class="sched water">
-      <legend>${icon('drop')}Watering</legend>
-      <label class="inline">Every <input name="waterEvery" type="number" inputmode="numeric" min="1" max="365" required value="${p ? p.waterEvery : 7}"> days</label>
-      ${p ? '' : `<label>Last watered<input name="lastWater" type="date" max="${today}" value="${today}"></label>`}
-    </fieldset>
-    <fieldset class="sched fert">
-      <legend>${icon('sprout')}Fertilizing</legend>
-      <label class="inline">Every <input name="fertEvery" type="number" inputmode="numeric" min="0" max="365" value="${p ? p.fertEvery || '' : 30}" placeholder="off"> days</label>
-      <p class="muted small">Leave empty to turn fertilizing reminders off.</p>
-      ${p ? '' : `<label>Last fertilized <span class="opt">optional</span><input name="lastFert" type="date" max="${today}"></label>`}
-    </fieldset>
-    <label>Notes <span class="opt">optional</span><textarea name="notes" rows="3" maxlength="1000" placeholder="Likes bright indirect light, let soil dry out between waterings">${esc(p?.notes)}</textarea></label>
+    <label><span class="lbl">Where it lives <span class="opt">optional</span></span><input name="location" maxlength="60" placeholder="Living room, east window" value="${esc(p?.location)}"></label>
+    ${schedBlock('water', p ? p.waterEvery : 7, p ? null : `<span>Last watered</span><input class="pill" name="lastWater" type="date" max="${today}" value="${today}">`)}
+    ${schedBlock('fert', p ? p.fertEvery || 0 : 28, p ? null : `<span>Last fertilized</span><input class="pill" name="lastFert" type="date" max="${today}">`)}
+    <label><span class="lbl">Notes <span class="opt">optional</span></span><textarea name="notes" rows="3" maxlength="1000" placeholder="Likes bright indirect light, let soil dry out between waterings">${esc(p?.notes)}</textarea></label>
     <button class="btn primary block" type="submit">${p ? 'Save changes' : 'Add plant'}</button>
     ${p ? `<button class="btn danger-ghost block" type="button" data-act="del-plant" data-plant="${p.id}">${icon('trash')}Delete plant</button>` : ''}
   </form>`;
@@ -422,7 +442,7 @@ function doneOnSheet(plant, type) {
   const today = toDateInput(Date.now());
   openSheet(`<h3>${TASKS[type].done} ${esc(plant.name)}</h3>
     <form class="form tight"><label>Date<input type="date" name="date" value="${today}" max="${today}" required></label>
-    <label>Note <span class="opt">optional</span><input name="note" maxlength="200" placeholder="${type === 'fert' ? 'Half-strength liquid feed' : 'Bottom watered'}"></label>
+    <label><span class="lbl">Note <span class="opt">optional</span></span><input name="note" maxlength="200" placeholder="${type === 'fert' ? 'Half-strength liquid feed' : 'Bottom watered'}"></label>
     <div class="sheet-actions"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn primary">Save</button></div></form>`,
   (el, close) => el.querySelector('form').onsubmit = async e => {
     e.preventDefault();
@@ -441,7 +461,7 @@ async function addPhotoFlow(plantId) {
   const today = toDateInput(Date.now());
   openSheet(`<img class="sheet-preview" src="${preview}" alt="">
     <form class="form tight"><label>Date taken<input type="date" name="date" value="${today}" max="${today}" required></label>
-    <label>Note <span class="opt">optional</span><input name="note" maxlength="200" placeholder="New leaf unfurling!"></label>
+    <label><span class="lbl">Note <span class="opt">optional</span></span><input name="note" maxlength="200" placeholder="New leaf unfurling!"></label>
     <div class="sheet-actions"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn primary">Save photo</button></div></form>`,
   (el, close) => el.querySelector('form').onsubmit = async e => {
     e.preventDefault();
@@ -516,6 +536,7 @@ async function onAction(btn) {
           changed();
         }
         break;
+      case 'step': return stepSched(btn.closest('.sched'), Number(btn.dataset.delta));
       case 'pick-cover': {
         const file = await pickImage();
         if (!file) return;
@@ -557,7 +578,7 @@ async function onPlantSubmit(form) {
   const f = new FormData(form);
   const id = route().id;
   const existing = id && state.plants.find(p => p.id === id);
-  const fertEvery = Number(f.get('fertEvery')) || 0;
+  const fertEvery = f.get('fertOn') ? Number(f.get('fertEvery')) || 0 : 0;
   const plant = existing || { id: uid(), createdAt: Date.now(), snooze: {} };
   Object.assign(plant, {
     name: f.get('name').trim(),
@@ -613,6 +634,9 @@ $app.addEventListener('click', e => {
 });
 $app.addEventListener('submit', e => {
   if (e.target.id === 'plant-form') { e.preventDefault(); onPlantSubmit(e.target); }
+});
+$app.addEventListener('change', e => {
+  if (e.target.name === 'fertOn') e.target.closest('.sched').querySelectorAll('[data-when-on]').forEach(el => { el.hidden = !e.target.checked; });
 });
 window.addEventListener('hashchange', render);
 document.addEventListener('visibilitychange', () => {
