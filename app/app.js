@@ -126,92 +126,6 @@ async function snooze(plant, type, days) {
   await db.put('plants', plant);
 }
 
-// ---------- reminders (push) ----------
-
-const isStandalone = () => window.navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
-const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
-const workerUrl = () => (state.settings.workerUrl || window.PLANT_CARE_CONFIG?.workerUrl || '').replace(/\/+$/, '');
-
-function reminderSlot(dayTs) {
-  const [h, m] = (state.settings.reminderTime || '09:00').split(':').map(Number);
-  const d = new Date(dayTs);
-  d.setHours(h, m, 0, 0);
-  return d.getTime();
-}
-
-function upcomingReminders() {
-  // Next reminder moment that is still ahead of us, so an overdue task is not re-sent instantly.
-  let next = reminderSlot(Date.now());
-  if (next <= Date.now()) next = reminderSlot(addDays(Date.now(), 1));
-  const out = [];
-  for (const p of state.plants) for (const type of Object.keys(TASKS)) {
-    const s = taskStatus(p, type);
-    if (!s) continue;
-    out.push({ key: `${p.id}:${type}`, label: `${type === 'water' ? '💧' : '🌱'} ${TASKS[type].verb} ${p.name}`, at: Math.max(reminderSlot(s.due), next) });
-  }
-  return out;
-}
-
-let syncTimer;
-function scheduleSync() {
-  clearTimeout(syncTimer);
-  syncTimer = setTimeout(syncReminders, 600);
-  updateBadge();
-}
-
-async function syncReminders() {
-  const base = workerUrl();
-  if (!base || !pushSupported() || Notification.permission !== 'granted') return;
-  try {
-    const reg = await navigator.serviceWorker.ready;
-    const sub = await reg.pushManager.getSubscription();
-    if (!sub) return;
-    await fetch(`${base}/sync`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user: state.settings.userId, subscription: sub.toJSON(), origin: location.origin, reminders: upcomingReminders() }),
-    });
-    await db.setMeta('lastSync', Date.now());
-  } catch (e) {
-    console.warn('sync failed', e);
-  }
-}
-
-function updateBadge() {
-  const n = dueTasks().length;
-  if ('setAppBadge' in navigator) (n ? navigator.setAppBadge(n) : navigator.clearAppBadge()).catch(() => {});
-}
-
-function b64ToBytes(b64) {
-  const s = atob(b64.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((b64.length + 3) % 4));
-  return Uint8Array.from(s, c => c.charCodeAt(0));
-}
-
-async function enableReminders() {
-  const base = workerUrl();
-  if (!base) throw new Error('The reminder server is not set up yet.');
-  const perm = await Notification.requestPermission();
-  if (perm !== 'granted') throw new Error('Notifications were not allowed. You can turn them on in iPhone Settings › Notifications › Plant Care.');
-  const { publicKey } = await (await fetch(`${base}/vapid`)).json();
-  const reg = await navigator.serviceWorker.ready;
-  let sub = await reg.pushManager.getSubscription();
-  const key = b64ToBytes(publicKey);
-  if (sub) {
-    const cur = sub.options?.applicationServerKey && new Uint8Array(sub.options.applicationServerKey);
-    if (cur && cur.join() !== key.join()) { await sub.unsubscribe(); sub = null; }
-  }
-  sub ??= await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
-  await syncReminders();
-}
-
-async function sendTest() {
-  const res = await fetch(`${workerUrl()}/test`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user: state.settings.userId }),
-  });
-  const data = await res.json();
-  if (!data.ok) throw new Error(data.error || `Push service answered ${data.status}`);
-}
-
 // ---------- photos ----------
 
 async function resizeImage(file, max, quality) {
@@ -268,7 +182,7 @@ const dataUrlToBlob = async url => (await fetch(url)).blob();
 async function exportBackup() {
   const photos = [];
   for (const p of state.photos) photos.push({ ...p, blob: await blobToDataUrl(p.blob), thumb: p.thumb ? await blobToDataUrl(p.thumb) : null });
-  const meta = (await db.all('meta')).filter(m => m.key !== 'userId' && m.key !== 'lastSync');
+  const meta = (await db.all('meta')).filter(m => m.key !== 'userId');
   const data = { app: 'plant-care', version: 1, exportedAt: Date.now(), plants: state.plants, events: state.events, photos, meta };
   const name = `plant-care-backup-${toDateInput(Date.now())}.json`;
   const file = new File([JSON.stringify(data)], name, { type: 'application/json' });
@@ -350,7 +264,6 @@ function chip(s) {
 function viewHome() {
   const due = dueTasks();
   const needsBackup = state.plants.length && (!state.settings.lastBackup || Date.now() - state.settings.lastBackup > 30 * DAY);
-  const remindersOff = state.plants.length && workerUrl() && (!pushSupported() || Notification.permission !== 'granted');
   const plants = [...state.plants].sort((a, b) => a.name.localeCompare(b.name));
 
   return `
@@ -358,7 +271,6 @@ function viewHome() {
     <div><p class="eyebrow">${esc(new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }))}</p><h1>My plants</h1></div>
     <a class="icon-btn" href="#/settings" aria-label="Settings">${icon('gear')}</a>
   </header>
-  ${remindersOff ? `<a class="banner" href="#/settings">${icon('bell')}<span>Turn on reminders so you never miss a watering.</span></a>` : ''}
   ${needsBackup ? `<a class="banner soft" href="#/settings">${icon('box')}<span>${state.settings.lastBackup ? "It's been a while since your last backup." : 'Back up your plants and photos.'}</span></a>` : ''}
   ${state.plants.length ? `
   <section>
@@ -473,30 +385,9 @@ function viewEdit(id) {
 
 function viewSettings() {
   const s = state.settings;
-  const supported = pushSupported();
-  const perm = supported ? Notification.permission : 'unsupported';
-  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
-  let status;
-  if (!workerUrl()) status = 'The reminder server is not connected yet.';
-  else if (ios && !isStandalone()) status = 'Add this app to your Home Screen first (Share › Add to Home Screen), then open it from there.';
-  else if (!supported) status = 'This browser does not support push notifications. On iPhone you need iOS 16.4 or newer.';
-  else if (perm === 'granted') status = 'Reminders are on.';
-  else if (perm === 'denied') status = 'Notifications are blocked. Turn them on in iPhone Settings › Notifications › Plant Care.';
-  else status = 'Reminders are off.';
-  const canEnable = workerUrl() && supported && perm !== 'denied' && !(ios && !isStandalone());
-
   return `
   <header class="top sub"><a class="icon-btn" href="#/" aria-label="Back">${icon('back')}</a><h1>Settings</h1><span></span></header>
   <div class="form">
-    <section class="panel">
-      <h2>${icon('bell')}Reminders</h2>
-      <p class="muted">${esc(status)}</p>
-      <label class="inline">Remind me at <input type="time" id="reminder-time" value="${esc(s.reminderTime || '09:00')}"></label>
-      ${canEnable ? `<button class="btn primary block" data-act="enable-push">${perm === 'granted' ? 'Refresh reminders' : 'Turn on reminders'}</button>` : ''}
-      ${perm === 'granted' && workerUrl() ? '<button class="btn ghost block" data-act="test-push">Send a test notification</button>' : ''}
-      <p class="muted small">You'll get one notification at this time on days something is due, and a daily nudge until you log it or snooze it.</p>
-    </section>
-
     <section class="panel">
       <h2>${icon('box')}Backup</h2>
       <p class="muted">Your plants and photos are saved on this phone. A backup puts everything in one file you can save to iCloud Drive or Files, or send to yourself.</p>
@@ -504,12 +395,6 @@ function viewSettings() {
       <button class="btn primary block" data-act="backup">Back up now</button>
       <button class="btn ghost block" data-act="restore">Restore from a backup</button>
     </section>
-
-    <details class="panel">
-      <summary>Advanced</summary>
-      <label>Reminder server address<input id="worker-url" type="url" inputmode="url" placeholder="https://plant-care-reminders.you.workers.dev" value="${esc(s.workerUrl || '')}"></label>
-      <p class="muted small">Leave empty to use the built-in address${window.PLANT_CARE_CONFIG?.workerUrl ? ` (${esc(window.PLANT_CARE_CONFIG.workerUrl)})` : ''}.</p>
-    </details>
     <p class="muted small center">Plant Care · ${state.plants.length} plants · ${state.photos.length} photos</p>
   </div>`;
 }
@@ -639,16 +524,6 @@ async function onAction(btn) {
         btn.classList.add('has-photo');
         break;
       }
-      case 'enable-push':
-        btn.disabled = true;
-        await enableReminders();
-        toast('Reminders are on 🌿');
-        render();
-        break;
-      case 'test-push':
-        await sendTest();
-        toast('Test sent. It should arrive in a few seconds.');
-        break;
       case 'backup':
         if (await exportBackup()) { toast('Backup saved'); render(); }
         break;
@@ -706,7 +581,6 @@ async function onPlantSubmit(form) {
 
 function changed() {
   render();
-  scheduleSync();
 }
 
 // ---------- routing ----------
@@ -740,22 +614,9 @@ $app.addEventListener('click', e => {
 $app.addEventListener('submit', e => {
   if (e.target.id === 'plant-form') { e.preventDefault(); onPlantSubmit(e.target); }
 });
-$app.addEventListener('change', async e => {
-  if (e.target.id === 'reminder-time' && e.target.value) {
-    state.settings.reminderTime = e.target.value;
-    await db.setMeta('reminderTime', e.target.value);
-    scheduleSync();
-    toast(`Reminders will come at ${e.target.value}`);
-  }
-  if (e.target.id === 'worker-url') {
-    state.settings.workerUrl = e.target.value.trim();
-    await db.setMeta('workerUrl', state.settings.workerUrl);
-    render();
-  }
-});
 window.addEventListener('hashchange', render);
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') { render(); scheduleSync(); }
+  if (document.visibilityState === 'visible') render();
 });
 
 // ---------- boot ----------
@@ -777,7 +638,6 @@ async function boot() {
   navigator.storage?.persist?.().catch(() => {});
   await load();
   render();
-  scheduleSync();
 }
 
 boot();

@@ -1,6 +1,6 @@
-// Offline cache for the app shell, plus push notification handling.
-const CACHE = 'plant-care-v1';
-const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'db.js', 'config.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/apple-touch-icon.png'];
+// Offline cache for the app shell.
+const CACHE = 'plant-care-v2';
+const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'db.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/apple-touch-icon.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -20,29 +20,4 @@ self.addEventListener('fetch', e => {
     if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); }
     return res;
   }).catch(() => caches.match(e.request, { ignoreSearch: true }).then(r => r || caches.match('./'))));
-});
-
-self.addEventListener('push', e => {
-  let data = {};
-  try { data = e.data ? e.data.json() : {}; } catch { data = { body: e.data?.text() }; }
-  const count = data.count || 1;
-  e.waitUntil(Promise.all([
-    self.registration.showNotification(data.title || 'Plant Care', {
-      body: data.body || 'Your plants need you',
-      tag: data.tag || 'plant-care',
-      icon: 'icons/icon-192.png',
-      badge: 'icons/icon-192.png',
-      data: { url: data.url || './' },
-    }),
-    data.tag === 'due' && self.navigator.setAppBadge ? self.navigator.setAppBadge(count).catch(() => {}) : null,
-  ]));
-});
-
-self.addEventListener('notificationclick', e => {
-  e.notification.close();
-  const target = new URL(e.notification.data?.url || './', self.registration.scope).href;
-  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
-    for (const c of list) if ('focus' in c) return c.focus();
-    return self.clients.openWindow(target);
-  }));
 });
