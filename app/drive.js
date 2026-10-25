@@ -1,5 +1,5 @@
-// Google Drive backup through the person's own Google Apps Script (see apps-script/Code.gs).
-// No Google Cloud project and no sign-in: the app posts to the script's web-app URL with a private key.
+// Google backup through the person's own Apps Script inside a Google Sheet (see apps-script/Code.gs).
+// No Google Cloud project and no sign-in: the app posts to the script's web-app URL with a key they chose.
 // Requests are sent as text/plain so the browser doesn't need a CORS preflight.
 
 const KEY = 'plant-care-drive';
@@ -15,15 +15,14 @@ export const conn = {
   get connected() { return !!load().url; },
   get url() { return load().url || ''; },
   get folder() { return load().folder || ''; },
-  // URL and key together, so another phone can join the same backup.
-  get code() { const s = load(); return s.url ? `${s.url}#${s.key}` : ''; },
   disconnect() { save({}); },
 };
 
-// Accepts the script URL on its own (first phone) or a connection code from another phone.
-export async function connect(input) {
-  const [url, key = crypto.randomUUID() + crypto.randomUUID()] = input.trim().split('#');
-  if (!/^https:\/\/script\.google(usercontent)?\.com\/.+/.test(url)) throw new Error('That doesn\'t look like an Apps Script web app address.');
+export async function connect(rawUrl, rawKey) {
+  const url = rawUrl.trim();
+  const key = rawKey.trim();
+  if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(url)) throw new Error('That doesn\'t look like a web app address. It starts with https://script.google.com and ends with /exec.');
+  if (key.length < 12) throw new Error('The key needs at least 12 characters, the same as in your script.');
   const res = await call('ping', {}, { url, key });
   save({ url, key, folder: res.folder });
   return res;
@@ -40,7 +39,7 @@ async function call(action, body = {}, s = load()) {
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); } catch { throw new Error('The script answered strangely. Check it is deployed with access for "Anyone".'); }
-  if (data.error === 'wrong key') throw new Error('This script is linked to another phone. Use the connection code from that phone.');
+  if (data.error === 'wrong key') throw new Error('That key doesn\'t match the KEY in your script.');
   if (data.error) throw new Error(data.error);
   return data;
 }

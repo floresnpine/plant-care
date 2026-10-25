@@ -249,7 +249,7 @@ async function importBackup(file) {
   await load();
 }
 
-// ---------- Google Drive sync ----------
+// ---------- Google Sheet backup ----------
 
 const sync = { busy: false, progress: '', error: '' };
 const LOCAL_ONLY_META = ['userId', 'cloudDirty', 'lastCloudSync'];
@@ -281,7 +281,7 @@ async function syncNow({ manual = false } = {}) {
     state.settings.lastCloudSync = Date.now();
     await db.setMeta('cloudDirty', false);
     await db.setMeta('lastCloudSync', state.settings.lastCloudSync);
-    if (manual) toast(uploaded ? `Synced, ${uploaded} new photo${uploaded === 1 ? '' : 's'} uploaded` : 'Synced to Google Drive');
+    if (manual) toast(uploaded ? `Synced, ${uploaded} new photo${uploaded === 1 ? '' : 's'} uploaded` : 'Synced to your Google Sheet');
   } catch (e) {
     console.warn('sync failed', e);
     sync.error = e.message || 'Sync failed';
@@ -310,7 +310,7 @@ function syncStatusText() {
 
 async function restoreFromDrive() {
   const data = await drive.pull((n, total) => toast(`Downloading photo ${n} of ${total}`));
-  if (!data) throw new Error('No Plant Care data in your Google Drive yet.');
+  if (!data) throw new Error('No Plant Care data in your Google Sheet yet.');
   const photos = [];
   for (const p of data.photos) photos.push({ ...p, thumb: await resizeImage(p.blob, 480, 0.75) });
   const meta = (data.meta || []).filter(m => !LOCAL_ONLY_META.includes(m.key));
@@ -321,13 +321,13 @@ async function restoreFromDrive() {
   await load();
 }
 
-// After signing in: a phone with no plants offers to bring them back from Drive; otherwise upload.
+// After connecting: if the sheet already has data, offer to bring it onto this phone; otherwise upload.
 async function afterConnect() {
   if (await drive.hasBackup().catch(() => false)) {
     const body = state.plants.length
-      ? 'Your Drive already has saved plants. Restore them onto this phone? This replaces what is on the phone now. Cancel keeps this phone and saves it to Drive instead.'
-      : 'Your Drive has saved plants and photos. Bring them onto this phone?';
-    if (await confirmSheet('Restore from Google Drive?', body, 'Restore', false)) {
+      ? 'Your Google Sheet already has saved plants. Restore them onto this phone? This replaces what is on the phone now. Cancel keeps this phone and saves it to the sheet instead.'
+      : 'Your Google Sheet has saved plants and photos. Bring them onto this phone?';
+    if (await confirmSheet('Restore from Google?', body, 'Restore', false)) {
       await restoreFromDrive();
       toast(`Restored ${state.plants.length} plants`);
       location.hash = '#/';
@@ -397,8 +397,8 @@ function viewHome() {
     <div><p class="eyebrow">${esc(new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }))}</p><h1>My plants</h1></div>
     <a class="icon-btn" href="#/settings" aria-label="Settings">${icon('gear')}</a>
   </header>
-  ${syncTrouble ? `<button class="banner" data-act="drive-sync">${icon('cloud')}<span>Some changes aren't in Google Drive yet. Tap to try again.</span></button>` : ''}
-  ${needsBackup ? `<a class="banner soft" href="#/settings">${icon('cloud')}<span>Turn on Google Drive backup so nothing gets lost.</span></a>` : ''}
+  ${syncTrouble ? `<button class="banner" data-act="drive-sync">${icon('cloud')}<span>Some changes aren't in your Google Sheet yet. Tap to try again.</span></button>` : ''}
+  ${needsBackup ? `<a class="banner soft" href="#/settings">${icon('cloud')}<span>Turn on Google Sheet backup so nothing gets lost.</span></a>` : ''}
   ${state.plants.length ? `
   <section>
     <h2>Today</h2>
@@ -555,18 +555,18 @@ function viewSettings() {
   <header class="top sub"><a class="icon-btn" href="#/" aria-label="Back">${icon('back')}</a><h1>Settings</h1><span></span></header>
   <div class="form">
     <section class="panel">
-      <h2>${icon('cloud')}Google Drive</h2>
+      <h2>${icon('cloud')}Google backup</h2>
       ${drive.conn.connected ? `
-      <p class="small">Saving to the ${drive.conn.folder ? `<a class="link" href="${esc(drive.conn.folder)}" target="_blank" rel="noopener">Plant Care folder</a>` : 'Plant Care folder'} in your Drive after every change.</p>
+      <p class="small">Saving to ${drive.conn.folder ? `<a class="link" href="${esc(drive.conn.folder)}" target="_blank" rel="noopener">your Plant Care sheet</a>` : 'your Plant Care sheet'} after every change.</p>
       <p class="muted small" id="sync-status">${esc(syncStatusText())}</p>
       <button class="btn ghost block" data-act="drive-sync">Sync now</button>
-      <button class="btn ghost block" data-act="drive-restore">Restore from Google Drive</button>
-      <button class="btn ghost block" data-act="drive-code">Copy code for another phone</button>
+      <button class="btn ghost block" data-act="drive-restore">Restore from Google</button>
       <button class="btn danger-ghost block" data-act="drive-disconnect">Disconnect</button>`
         : `
-      <p class="muted small">Saves your plants, care history and photos to your own Google Drive automatically after every change. Paste the address of your Plant Care Apps Script, or a code copied from another phone.</p>
-      <input id="drive-url" type="url" inputmode="url" autocomplete="off" placeholder="https://script.google.com/macros/s/…/exec" aria-label="Apps Script address">
-      <button class="btn primary block" data-act="drive-connect">Connect Google Drive</button>`}
+      <p class="muted small">Saves your plants, care history and photos to your own Plant Care Google Sheet automatically after every change.</p>
+      <label>Web app address<input id="drive-url" type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://script.google.com/macros/s/…/exec"></label>
+      <label>Your key<input id="drive-key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="The KEY you set in the script"></label>
+      <button class="btn primary block" data-act="drive-connect">Connect Google Sheet</button>`}
     </section>
     <section class="panel">
       <h2>${icon('box')}Backup file</h2>
@@ -717,24 +717,23 @@ async function onAction(btn) {
         break;
       }
       case 'drive-connect': {
-        const value = document.getElementById('drive-url')?.value || '';
-        if (!value.trim()) return toast('Paste the Apps Script address first');
         btn.disabled = true;
         btn.textContent = 'Connecting…';
-        await drive.connect(value);
-        toast('Connected to Google Drive');
+        try {
+          await drive.connect(document.getElementById('drive-url').value, document.getElementById('drive-key').value);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = 'Connect Google Sheet';
+        }
+        toast('Connected to your Google Sheet');
         render();
         await afterConnect();
         break;
       }
-      case 'drive-code':
-        await navigator.clipboard.writeText(drive.conn.code);
-        toast('Copied. Paste it into Settings on your other phone.');
-        break;
       case 'drive-sync':
         return syncNow({ manual: true });
       case 'drive-restore':
-        if (await confirmSheet('Restore from Google Drive?', 'Everything on this phone will be replaced with what is saved in your Drive.', 'Restore')) {
+        if (await confirmSheet('Restore from Google?', 'Everything on this phone will be replaced with what is saved in your Google Sheet.', 'Restore')) {
           btn.disabled = true;
           await restoreFromDrive();
           toast(`Restored ${state.plants.length} plants`);
@@ -743,7 +742,7 @@ async function onAction(btn) {
         }
         break;
       case 'drive-disconnect':
-        if (await confirmSheet('Disconnect Google Drive?', 'Syncing stops. Your plants stay on this phone, and what is already in Drive stays there.', 'Disconnect')) {
+        if (await confirmSheet('Disconnect Google Sheet?', 'Syncing stops. Your plants stay on this phone, and what is already in the sheet stays there.', 'Disconnect')) {
           drive.conn.disconnect();
           sync.error = '';
           render();

@@ -285,3 +285,4 @@ input:focus, textarea:focus { outline: 2px solid var(--forest); outline-offset: 
 .group input.pill { text-align: left; color: var(--ink); }
 button.banner { width: 100%; border: 0; text-align: left; font: inherit; font-size: 14px; line-height: 22px; cursor: pointer; }
 a.link { color: var(--forest); text-decoration: underline; text-underline-offset: 3px; }
+.panel label { margin-top: var(--space-3); }

@@ -1,61 +1,64 @@
-// Runs apps-script/Code.gs in Node against in-memory stand-ins for DriveApp & co,
+// Runs apps-script/Code.gs in Node against an in-memory stand-in for one Google Sheet,
 // and answers like a deployed web app (text/plain POST in, JSON out with Access-Control-Allow-Origin: *).
 import fs from 'node:fs';
 import vm from 'node:vm';
-import { randomUUID } from 'node:crypto';
 
-export function fakeAppsScript() {
-  const props = new Map();
-  const files = new Map(); // id -> {name, bytes, trashed, folder}
-  const folders = new Map();
-  const iter = arr => { let i = 0; return { hasNext: () => i < arr.length, next: () => arr[i++] }; };
-  const fileObj = f => ({
-    getName: () => f.name,
-    setContent: c => { f.bytes = Buffer.from(c); },
-    setTrashed: t => { f.trashed = t; },
-    getBlob: () => ({ getBytes: () => [...f.bytes].map(b => (b > 127 ? b - 256 : b)), getDataAsString: () => f.bytes.toString() }),
-  });
-  const folderObj = d => ({
-    getId: () => d.id, getUrl: () => `https://drive.google.com/drive/folders/${d.id}`, isTrashed: () => false,
-    getFiles: () => iter([...files.values()].filter(f => f.folder === d.id && !f.trashed).map(fileObj)),
-    getFilesByName: n => iter([...files.values()].filter(f => f.folder === d.id && !f.trashed && f.name === n).map(fileObj)),
-    createFile: (a, b) => {
-      const f = typeof a === 'string' ? { name: a, bytes: Buffer.from(b) } : { name: a.name, bytes: a.bytes };
-      Object.assign(f, { folder: d.id, trashed: false }); files.set(randomUUID(), f); return fileObj(f);
-    },
-  });
+export function fakeAppsScript(key) {
+  const sheets = new Map(); // name -> array of rows
+  const MAX_CELL = 50000;
+  const sheetObj = name => {
+    const rows = sheets.get(name);
+    const range = (r, c, nr, nc) => ({
+      setValues: vals => {
+        if (vals.length !== nr || vals.some(v => v.length !== nc)) throw new Error('range size mismatch');
+        vals.forEach((v, i) => { rows[r - 1 + i] ??= []; v.forEach((x, j) => {
+          if (typeof x === 'string' && x.length > MAX_CELL) throw new Error('cell too long');
+          rows[r - 1 + i][c - 1 + j] = x;
+        }); });
+      },
+      getValues: () => Array.from({ length: nr }, (_, i) => Array.from({ length: nc }, (_, j) => rows[r - 1 + i]?.[c - 1 + j] ?? '')),
+      setFontWeight: () => {}, setNumberFormat: () => {},
+    });
+    return {
+      getLastRow: () => rows.length,
+      getRange: (a, c, nr = 1, nc = 1) => (typeof a === 'string' ? range(1, 1, 0, 0) : range(a, c, nr, nc)),
+      deleteRows: (start, n) => rows.splice(start - 1, n),
+      clearContents: () => rows.splice(0),
+      setFrozenRows: () => {},
+    };
+  };
+  const ss = {
+    getUrl: () => 'https://docs.google.com/spreadsheets/d/TEST/edit',
+    getSheetByName: n => (sheets.has(n) ? sheetObj(n) : null),
+    insertSheet: n => { sheets.set(n, []); return sheetObj(n); },
+  };
   const ctx = {
-    PropertiesService: { getScriptProperties: () => ({ getProperty: k => props.get(k) ?? null, setProperty: (k, v) => props.set(k, v) }) },
-    DriveApp: {
-      getFolderById: id => { if (!folders.has(id)) throw new Error('no folder'); return folderObj(folders.get(id)); },
-      getFoldersByName: n => iter([...folders.values()].filter(d => d.name === n).map(folderObj)),
-      createFolder: n => { const d = { id: randomUUID(), name: n }; folders.set(d.id, d); return folderObj(d); },
-    },
-    Utilities: {
-      base64Decode: s => [...Buffer.from(s, 'base64')],
-      base64Encode: bytes => Buffer.from(bytes.map(b => b & 255)).toString('base64'),
-      newBlob: (bytes, type, name) => ({ name, bytes: Buffer.from(bytes.map(b => b & 255)) }),
-    },
+    SpreadsheetApp: { getActiveSpreadsheet: () => ss },
     ContentService: { MimeType: { JSON: 'json' }, createTextOutput: t => ({ setMimeType: () => ({ text: t }) }) },
   };
   vm.createContext(ctx);
-  vm.runInContext(fs.readFileSync(new URL('../apps-script/Code.gs', import.meta.url), 'utf8'), ctx);
+  let src = fs.readFileSync(new URL('../apps-script/Code.gs', import.meta.url), 'utf8');
+  assert(src.includes('@OnlyCurrentDoc'));
+  assert(!/DriveApp|DocumentApp|openById|openByUrl|UrlFetchApp/.test(src), 'script must only touch its own spreadsheet');
+  if (key) src = src.replace("const KEY = 'CHANGE-ME';", `const KEY = ${JSON.stringify(key)};`);
+  vm.runInContext(src, ctx);
 
   const log = [];
   const CORS = { 'access-control-allow-origin': '*' };
   async function route(rt) {
     const req = rt.request(); const url = new URL(req.url());
-    if (url.hostname === 'script.google.com') {
-      if (req.method() !== 'POST') return rt.fulfill({ status: 200, headers: CORS, body: ctx.doGet().text });
-      if (req.headers()['content-type'] && !req.headers()['content-type'].startsWith('text/plain')) throw new Error('would need CORS preflight: ' + req.headers()['content-type']);
-      const body = req.postData();
-      log.push(JSON.parse(body).action + (JSON.parse(body).name ? ' ' + JSON.parse(body).name : ''));
-      // The real web app answers with a 302 to script.googleusercontent.com; Playwright can't intercept
-      // the followed request, so the answer is served directly with the same CORS header.
-      const out = ctx.doPost({ postData: { contents: body } }).text;
-      return rt.fulfill({ status: 200, headers: { ...CORS, 'content-type': 'application/json' }, body: out });
-    }
-    throw new Error('unexpected request ' + url);
+    if (url.hostname !== 'script.google.com') throw new Error('unexpected request ' + url);
+    if (req.method() !== 'POST') return rt.fulfill({ status: 200, headers: CORS, body: ctx.doGet().text });
+    const ct = req.headers()['content-type'];
+    if (ct && !ct.startsWith('text/plain')) throw new Error('would need a CORS preflight: ' + ct);
+    const body = JSON.parse(req.postData());
+    log.push(body.action + (body.name ? ' ' + body.name : ''));
+    // The real web app answers with a 302 to script.googleusercontent.com; Playwright can't intercept
+    // the followed request, so the answer is served directly with the same CORS header.
+    const out = ctx.doPost({ postData: { contents: req.postData() } }).text;
+    return rt.fulfill({ status: 200, headers: { ...CORS, 'content-type': 'application/json' }, body: out });
   }
-  return { route, files, props, log };
+  return { route, sheets, log };
 }
+
+function assert(ok, msg = 'assertion failed') { if (!ok) throw new Error(msg); }
