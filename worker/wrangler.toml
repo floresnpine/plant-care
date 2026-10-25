@@ -1,0 +1,15 @@
+name = "plant-care-reminders"
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+workers_dev = true
+
+[triggers]
+crons = ["*/15 * * * *"]
+
+[[durable_objects.bindings]]
+name = "REMINDERS"
+class_name = "ReminderStore"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ReminderStore"]
