@@ -267,3 +267,16 @@ input:focus, textarea:focus { outline: 2px solid var(--forest); outline-offset: 
 .rooms button { min-height: 36px; padding: 0 var(--space-3); border: 1px solid var(--line-strong); border-radius: var(--radius-pill); background: transparent; color: var(--ink); font: 400 14px/20px var(--font-body); cursor: pointer; }
 .rooms button.on { background: var(--forest-tint); border-color: var(--forest-tint); color: var(--forest); font-weight: 500; }
 .field input[hidden] { display: none; }
+
+/* schedule rows: one thin, airy face for labels, values and dates alike */
+:root { --font-detail: "Noto Sans JP", "Hiragino Sans", system-ui, sans-serif; }
+.group .row, .group .row > span, .stepper b, .stepper button,
+.group input.pill, .group input.pill::-webkit-date-and-time-value, .group input.pill::-webkit-datetime-edit,
+.task-card > p {
+  font-family: var(--font-detail);
+  font-weight: 300;
+  font-size: 16px;
+  letter-spacing: .02em;
+}
+.task-card > p { font-size: 14px; }
+.group input.pill { text-align: left; color: var(--ink); }
