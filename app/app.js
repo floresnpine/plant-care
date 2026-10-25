@@ -19,6 +19,7 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 const uid = () => crypto.randomUUID();
 const dayStart = ts => { const d = new Date(ts); d.setHours(0, 0, 0, 0); return d.getTime(); };
 const addDays = (ts, n) => { const d = new Date(ts); d.setDate(d.getDate() + n); return d.getTime(); };
+const addMonths = (ts, n) => { const d = new Date(ts); const day = d.getDate(); d.setDate(1); d.setMonth(d.getMonth() + n); d.setDate(Math.min(day, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate())); return d.getTime(); };
 const daysBetween = (a, b) => Math.round((dayStart(b) - dayStart(a)) / DAY);
 const toDateInput = ts => { const d = new Date(ts); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const fromDateInput = (v, keepTime = true) => {
@@ -78,16 +79,17 @@ function taskStatus(plant, type) {
   if (every <= 0) return null;
   const last = lastEvent(plant.id, type);
   const base = last ? last.at : plant.createdAt;
-  let due = dayStart(addDays(base, every));
+  const unit = plant[`${type}Unit`] || 'day';
+  let due = dayStart(unit === 'month' ? addMonths(base, every) : addDays(base, unit === 'week' ? every * 7 : every));
   const snoozed = plant.snooze?.[type] && plant.snooze[type] > due ? plant.snooze[type] : null;
   if (snoozed) due = snoozed;
   const days = daysBetween(Date.now(), due);
   let text;
   if (days < 0) text = days === -1 ? '1 day overdue' : `${-days} days overdue`;
-  else if (days === 0) text = 'Due today';
+  else if (days === 0) text = 'Today';
   else if (days === 1) text = 'Tomorrow';
   else text = `In ${days} days`;
-  return { type, every, last, due, days, text, snoozed, isDue: days <= 0 };
+  return { type, every, unit, last, due, days, text, snoozed, isDue: days <= 0 };
 }
 
 function dueTasks() {
@@ -256,7 +258,9 @@ function thumbHtml(plant, cls = 'thumb') {
 function chip(s) {
   if (!s) return '';
   const tone = s.days < 0 ? 'late' : s.days === 0 ? 'due' : 'ok';
-  return `<span class="chip ${s.type} ${tone}">${icon(TASKS[s.type].icon)}${esc(s.text)}</span>`;
+  const verb = TASKS[s.type].verb;
+  const text = s.days < 0 ? 'Overdue' : s.days === 0 ? `${verb} today` : s.days === 1 ? `${verb} tomorrow` : `${verb} in ${s.days} days`;
+  return `<span class="chip ${tone}">${esc(s.type === 'water' && s.days < 0 ? 'Thirsty' : text)}</span>`;
 }
 
 // ---------- views ----------
@@ -281,7 +285,7 @@ function viewHome() {
           <div><strong>${TASKS[t.type].verb} ${esc(t.plant.name)}</strong><span class="${t.days < 0 ? 'late-text' : 'muted'}">${esc(t.text)}</span></div></a>
         <button class="icon-btn snooze" data-act="snooze" data-plant="${t.plant.id}" data-type="${t.type}" aria-label="Snooze">${icon('clock')}</button>
         <button class="done-btn ${t.type}" data-act="done" data-plant="${t.plant.id}" data-type="${t.type}" aria-label="${TASKS[t.type].done}">${icon('check')}</button>
-      </li>`).join('')}</ul>` : `<div class="caught-up">${icon('leaf')}<span>All caught up. Your plants are happy.</span></div>`}
+      </li>`).join('')}</ul>` : `<div class="caught-up">${icon('leaf')}<span>Nothing to do today.</span></div>`}
   </section>
   <section>
     <h2>All plants <span class="count">${plants.length}</span></h2>
@@ -306,10 +310,10 @@ function taskCard(plant, type) {
   if (!s) return `<div class="task-card off ${type}"><div class="tc-head">${icon(t.icon)}<strong>${t.verb}</strong></div><p class="muted small">Off for this plant. Edit the plant to set a schedule.</p></div>`;
   return `
   <div class="task-card ${type} ${s.days < 0 ? 'late' : s.days === 0 ? 'due' : ''}">
-    <div class="tc-head">${icon(t.icon)}<strong>${t.verb}</strong><span class="tc-status">${esc(s.text)}</span></div>
-    <p class="muted small">Every ${s.every} day${s.every === 1 ? '' : 's'} · ${s.last ? `last ${ago(s.last.at)}` : 'not logged yet'}${s.snoozed ? ` · snoozed to ${fmtDate(s.snoozed)}` : ''}</p>
+    <div class="tc-head">${icon(t.icon)}<strong>${t.verb}</strong><span class="tc-status">${esc(s.days > 0 ? `Next in ${s.days} day${s.days === 1 ? '' : 's'}` : s.text)}</span></div>
+    <p class="muted small">Every ${s.every === 1 ? UNITS[s.unit][0] : unitLabel(s.every, s.unit)} · ${s.last ? `last ${ago(s.last.at)}` : 'not logged yet'}${s.snoozed ? ` · snoozed to ${fmtDate(s.snoozed)}` : ''}</p>
     <div class="tc-actions">
-      <button class="btn ${type === 'water' ? 'water' : 'fert'}" data-act="done" data-plant="${plant.id}" data-type="${type}">${icon('check')}${t.done} today</button>
+      <button class="btn ghost" data-act="done" data-plant="${plant.id}" data-type="${type}">${icon('check')}Mark as ${t.done.toLowerCase()}</button>
       <button class="btn ghost" data-act="done-on" data-plant="${plant.id}" data-type="${type}">${icon('calendar')}Other day</button>
       ${s.days <= 1 ? `<button class="btn ghost" data-act="snooze" data-plant="${plant.id}" data-type="${type}">${icon('clock')}Snooze</button>` : ''}
     </div>
@@ -325,19 +329,17 @@ function viewPlant(id) {
   const first = photos[photos.length - 1];
 
   return `
-  <div class="hero ${cover ? '' : 'no-photo'}">
-    ${cover ? `<img src="${photoUrl(cover, false)}" alt="">` : `<div class="hero-ph">${icon('leaf')}</div>`}
-    <div class="hero-bar"><a class="icon-btn glass" href="#/" aria-label="Back">${icon('back')}</a><a class="icon-btn glass" href="#/edit/${p.id}" aria-label="Edit">${icon('edit')}</a></div>
-  </div>
+  <header class="top sub"><a class="icon-btn" href="#/" aria-label="Back">${icon('back')}</a><span></span><a class="icon-btn" href="#/edit/${p.id}" aria-label="Edit">${icon('edit')}</a></header>
   <div class="detail">
-    <h1>${esc(p.name)}</h1>
+    ${cover ? `<img class="hero-img" src="${photoUrl(cover, false)}" alt="">` : ''}
+    <h1 class="title">${esc(p.name)}</h1>
     ${p.location ? `<p class="muted">${esc(p.location)}</p>` : ''}
     ${p.notes ? `<p class="notes">${esc(p.notes)}</p>` : ''}
     ${taskCard(p, 'water')}
     ${taskCard(p, 'fert')}
 
     <section>
-      <div class="section-head"><h2>Photo timeline</h2><button class="btn small primary" data-act="add-photo" data-plant="${p.id}">${icon('camera')}Add photo</button></div>
+      <div class="section-head"><h2>Photo timeline</h2><button class="btn small ghost" data-act="add-photo" data-plant="${p.id}">${icon('camera')}Add photo</button></div>
       ${photos.length ? `
         ${photos.length > 1 && daysBetween(first.at, photos[0].at) > 0 ? `<p class="muted small">${photos.length} photos over ${daysBetween(first.at, photos[0].at)} day${daysBetween(first.at, photos[0].at) === 1 ? '' : 's'}</p>` : ''}
         <ol class="timeline">${photos.map(ph => `
@@ -356,33 +358,50 @@ function viewPlant(id) {
   </div>`;
 }
 
-// Fertilizing schedules are usually weeks apart, so its stepper moves a week at a time past two weeks.
-const stepFor = (type, v, delta) => (type === 'fert' && (delta > 0 ? v >= 14 : v > 14) ? 7 : 1);
+const UNITS = { day: ['day', 'days'], week: ['week', 'weeks'], month: ['month', 'months'] };
+const MAX_COUNT = { day: 365, week: 52, month: 12 };
+const unitLabel = (n, unit) => `${n} ${UNITS[unit][n === 1 ? 0 : 1]}`;
+const toDays = (n, unit) => n * (unit === 'month' ? 30 : unit === 'week' ? 7 : 1);
 
-function schedBlock(type, value, lastRow) {
+function schedBlock(type, value, unit, lastRow) {
   const field = TASKS[type].every;
   const on = type === 'water' || value > 0;
-  const days = value > 0 ? value : 28;
+  const n = value > 0 ? value : 4;
+  const u = value > 0 ? unit || 'day' : 'week';
   return `
     <div class="sched ${type}" data-type="${type}">
       <div class="group-title">${icon(TASKS[type].icon)}${type === 'water' ? 'Watering' : 'Fertilizing'}</div>
       <div class="group">
-        ${type === 'fert' ? `<label class="row"><span>Reminders</span><input type="checkbox" class="switch" name="fertOn" ${on ? 'checked' : ''}></label>` : ''}
+        ${type === 'fert' ? `<label class="row"><span>Fertilize this plant</span><input type="checkbox" class="switch" name="fertOn" ${on ? 'checked' : ''}></label>` : ''}
         <div class="row" data-when-on ${on ? '' : 'hidden'}><span>Every</span>
-          <div class="stepper"><button type="button" data-act="step" data-delta="-1" aria-label="Fewer days">−</button><b>${days} days</b><button type="button" data-act="step" data-delta="1" aria-label="More days">+</button></div>
-          <input type="hidden" name="${field}" value="${days}"></div>
+          <div class="stepper"><button type="button" data-act="step" data-delta="-1" aria-label="Less often">−</button><b>${unitLabel(n, u)}</b><button type="button" data-act="step" data-delta="1" aria-label="More">+</button></div>
+          <input type="hidden" name="${field}" value="${n}"><input type="hidden" name="${type}Unit" value="${u}"></div>
+        <div class="row units" data-when-on ${on ? '' : 'hidden'}>${Object.keys(UNITS).map(k => `<button type="button" class="${k === u ? 'on' : ''}" data-act="unit" data-unit="${k}">${UNITS[k][1][0].toUpperCase() + UNITS[k][1].slice(1)}</button>`).join('')}</div>
         ${lastRow ? `<label class="row" data-when-on ${on ? '' : 'hidden'}>${lastRow}</label>` : ''}
       </div>
-      ${type === 'fert' ? '<p class="hint">Turn off for plants that don\'t need feeding.</p>' : ''}
+      ${type === 'fert' ? '<p class="hint">Turn off for plants that don\'t need feeding. Watering and fertilizing both show up in your Today list when they\'re due.</p>' : ''}
     </div>`;
 }
 
+function renderSched(block) {
+  const [count, unit] = block.querySelectorAll('input[type=hidden]');
+  block.querySelector('.stepper b').textContent = unitLabel(Number(count.value), unit.value);
+  block.querySelectorAll('.units button').forEach(b => b.classList.toggle('on', b.dataset.unit === unit.value));
+}
+
 function stepSched(block, delta) {
-  const input = block.querySelector('input[type=hidden]');
-  const v = Number(input.value);
-  const next = Math.min(365, Math.max(1, v + delta * stepFor(block.dataset.type, v, delta)));
-  input.value = next;
-  block.querySelector('.stepper b').textContent = `${next} day${next === 1 ? '' : 's'}`;
+  const [count, unit] = block.querySelectorAll('input[type=hidden]');
+  count.value = Math.min(MAX_COUNT[unit.value], Math.max(1, Number(count.value) + delta));
+  renderSched(block);
+}
+
+// Switching unit keeps roughly the same interval, e.g. 14 days becomes 2 weeks.
+function setUnit(block, next) {
+  const [count, unit] = block.querySelectorAll('input[type=hidden]');
+  const days = toDays(Number(count.value), unit.value);
+  count.value = Math.min(MAX_COUNT[next], Math.max(1, Math.round(days / toDays(1, next))));
+  unit.value = next;
+  renderSched(block);
 }
 
 function viewEdit(id) {
@@ -395,8 +414,8 @@ function viewEdit(id) {
     ${p ? '' : `<button type="button" class="photo-pick" data-act="pick-cover"><span class="pp-inner">${icon('camera')}<span>Add a photo</span></span></button>`}
     <label>Name<input name="name" required maxlength="60" placeholder="Monstera" value="${esc(p?.name)}"></label>
     <label><span class="lbl">Where it lives <span class="opt">optional</span></span><input name="location" maxlength="60" placeholder="Living room, east window" value="${esc(p?.location)}"></label>
-    ${schedBlock('water', p ? p.waterEvery : 7, p ? null : `<span>Last watered</span><input class="pill" name="lastWater" type="date" max="${today}" value="${today}">`)}
-    ${schedBlock('fert', p ? p.fertEvery || 0 : 28, p ? null : `<span>Last fertilized</span><input class="pill" name="lastFert" type="date" max="${today}">`)}
+    ${schedBlock('water', p ? p.waterEvery : 7, p?.waterUnit, p ? null : `<span>Last watered</span><input class="pill" name="lastWater" type="date" max="${today}" value="${today}">`)}
+    ${schedBlock('fert', p ? p.fertEvery || 0 : 4, p ? p.fertUnit : 'week', p ? null : `<span>Last fertilized</span><input class="pill" name="lastFert" type="date" max="${today}">`)}
     <label><span class="lbl">Notes <span class="opt">optional</span></span><textarea name="notes" rows="3" maxlength="1000" placeholder="Likes bright indirect light, let soil dry out between waterings">${esc(p?.notes)}</textarea></label>
     <button class="btn primary block" type="submit">${p ? 'Save changes' : 'Add plant'}</button>
     ${p ? `<button class="btn danger-ghost block" type="button" data-act="del-plant" data-plant="${p.id}">${icon('trash')}Delete plant</button>` : ''}
@@ -461,7 +480,7 @@ async function addPhotoFlow(plantId) {
   const today = toDateInput(Date.now());
   openSheet(`<img class="sheet-preview" src="${preview}" alt="">
     <form class="form tight"><label>Date taken<input type="date" name="date" value="${today}" max="${today}" required></label>
-    <label><span class="lbl">Note <span class="opt">optional</span></span><input name="note" maxlength="200" placeholder="New leaf unfurling!"></label>
+    <label><span class="lbl">Note <span class="opt">optional</span></span><input name="note" maxlength="200" placeholder="New leaf unfurling"></label>
     <div class="sheet-actions"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn primary">Save photo</button></div></form>`,
   (el, close) => el.querySelector('form').onsubmit = async e => {
     e.preventDefault();
@@ -537,6 +556,7 @@ async function onAction(btn) {
         }
         break;
       case 'step': return stepSched(btn.closest('.sched'), Number(btn.dataset.delta));
+      case 'unit': return setUnit(btn.closest('.sched'), btn.dataset.unit);
       case 'pick-cover': {
         const file = await pickImage();
         if (!file) return;
@@ -585,7 +605,9 @@ async function onPlantSubmit(form) {
     location: f.get('location').trim(),
     notes: f.get('notes').trim(),
     waterEvery: Math.max(1, Number(f.get('waterEvery')) || 7),
+    waterUnit: f.get('waterUnit') || 'day',
     fertEvery,
+    fertUnit: f.get('fertUnit') || 'day',
   });
   form.querySelector('[type=submit]').disabled = true;
   await db.put('plants', plant);
