@@ -1,6 +1,6 @@
 // Offline cache for the app shell.
-const CACHE = 'plant-care-v11';
-const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'db.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/apple-touch-icon.png'];
+const CACHE = 'plant-care-v13';
+const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'db.js', 'drive.js', 'config.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/apple-touch-icon.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));

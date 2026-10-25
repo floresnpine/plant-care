@@ -1,4 +1,5 @@
 import { db } from './db.js';
+import * as drive from './drive.js';
 
 const DAY = 86400000;
 const $app = document.getElementById('app');
@@ -61,6 +62,7 @@ const ICONS = {
   bell: '<path d="M6 16V11a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 20a2 2 0 0 0 4 0"/>',
   leaf: '<path d="M5 19c0-8 5-14 15-14 0 10-6 15-14 15"/><path d="M5 19l8-8"/>',
   calendar: '<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/>',
+  cloud: '<path d="M7 18a4.5 4.5 0 0 1-.6-8.96A6 6 0 0 1 18 9.5a4.25 4.25 0 0 1-.5 8.5z"/>',
   box: '<path d="M4 8l8-4 8 4v8l-8 4-8-4z"/><path d="M4 8l8 4 8-4M12 12v8"/>',
 };
 const icon = (name, cls = '') => `<svg class="ico ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
@@ -130,25 +132,52 @@ async function snooze(plant, type, days) {
 
 // ---------- photos ----------
 
-async function resizeImage(file, max, quality) {
+// Photos are re-encoded as JPEG: at most 2048px on the long side and about 600 KB, which keeps
+// them sharp on a phone screen while a 4 MB camera photo shrinks to a few hundred KB.
+// Re-encoding also drops the photo's location data.
+const PHOTO_MAX_PX = 2048;
+const PHOTO_MAX_BYTES = 600 * 1024;
+
+async function decodeImage(file) {
   const url = URL.createObjectURL(file);
   try {
     const img = new Image();
     img.src = url;
     await img.decode();
-    const scale = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
-    const c = document.createElement('canvas');
-    c.width = Math.round(img.naturalWidth * scale);
-    c.height = Math.round(img.naturalHeight * scale);
-    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-    return await new Promise(r => c.toBlob(r, 'image/jpeg', quality));
+    return img;
   } finally {
     URL.revokeObjectURL(url);
   }
 }
 
+function encode(img, max, quality) {
+  const scale = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+  const c = document.createElement('canvas');
+  c.width = Math.round(img.naturalWidth * scale);
+  c.height = Math.round(img.naturalHeight * scale);
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  return new Promise(r => c.toBlob(r, 'image/jpeg', quality));
+}
+
+async function resizeImage(file, max, quality) {
+  return encode(await decodeImage(file), max, quality);
+}
+
+async function compressPhoto(file) {
+  const img = await decodeImage(file);
+  let max = PHOTO_MAX_PX;
+  let quality = 0.85;
+  let blob = await encode(img, max, quality);
+  while (blob.size > PHOTO_MAX_BYTES && max > 1000) {
+    if (quality > 0.7) quality -= 0.05;
+    else max = Math.round(max * 0.85);
+    blob = await encode(img, max, quality);
+  }
+  return blob;
+}
+
 async function savePhoto(plantId, file, at = Date.now(), note = '') {
-  const [blob, thumb] = await Promise.all([resizeImage(file, 1600, 0.82), resizeImage(file, 480, 0.75)]);
+  const [blob, thumb] = await Promise.all([compressPhoto(file), resizeImage(file, 480, 0.75)]);
   const photo = { id: uid(), plantId, at, note, blob, thumb };
   await db.put('photos', photo);
   state.photos.push(photo);
@@ -220,6 +249,101 @@ async function importBackup(file) {
   await load();
 }
 
+// ---------- Google Drive sync ----------
+
+const clientId = () => window.PLANT_CARE_CONFIG?.googleClientId || '';
+const sync = { busy: false, progress: '', error: '' };
+const LOCAL_ONLY_META = ['userId', 'cloudDirty', 'lastCloudSync'];
+
+async function markDirty() {
+  state.settings.cloudDirty = true;
+  await db.setMeta('cloudDirty', true);
+}
+
+let syncTimer;
+function scheduleSync(delay = 2500) {
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(syncNow, delay);
+}
+
+async function syncNow({ manual = false } = {}) {
+  if (!drive.auth.connected || sync.busy) return;
+  if (!drive.auth.token) {
+    // Tokens last an hour. Renew quietly when the app opens, otherwise wait for a tap.
+    if (manual) return drive.auth.signIn(clientId());
+    sync.error = 'reconnect';
+    return render();
+  }
+  if (!manual && !state.settings.cloudDirty) return;
+  sync.busy = true;
+  sync.error = '';
+  updateSyncLabel();
+  try {
+    const meta = (await db.all('meta')).filter(m => !LOCAL_ONLY_META.includes(m.key));
+    const { uploaded } = await drive.push({ plants: state.plants, events: state.events, photos: state.photos, meta }, (n, total) => {
+      sync.progress = `Uploading photo ${n} of ${total}`;
+      updateSyncLabel();
+    });
+    state.settings.cloudDirty = false;
+    state.settings.lastCloudSync = Date.now();
+    await db.setMeta('cloudDirty', false);
+    await db.setMeta('lastCloudSync', state.settings.lastCloudSync);
+    if (manual) toast(uploaded ? `Synced, ${uploaded} new photo${uploaded === 1 ? '' : 's'} uploaded` : 'Synced to Google Drive');
+  } catch (e) {
+    console.warn('sync failed', e);
+    sync.error = e instanceof drive.AuthError ? 'reconnect' : 'Sync failed. It will try again next time.';
+    if (manual) toast(e instanceof drive.AuthError ? 'Google sign-in expired' : 'Sync failed, check your connection');
+  } finally {
+    sync.busy = false;
+    sync.progress = '';
+    if (route().view === 'settings' || route().view === '') render();
+  }
+}
+
+function updateSyncLabel() {
+  const el = document.getElementById('sync-status');
+  if (el) el.textContent = syncStatusText();
+}
+
+function syncStatusText() {
+  if (sync.busy) return sync.progress || 'Syncing…';
+  if (sync.error === 'reconnect' || drive.auth.error) return 'Sign-in expired. Tap Reconnect to keep syncing.';
+  if (sync.error) return sync.error;
+  const last = state.settings.lastCloudSync;
+  if (!last) return 'Connected. First sync is on its way.';
+  const mins = Math.round((Date.now() - last) / 60000);
+  const when = mins < 1 ? 'just now' : mins < 60 ? `${mins} min ago` : daysBetween(last, Date.now()) === 0 ? `today at ${new Date(last).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}` : fmtLong(last);
+  return `${state.settings.cloudDirty ? 'Changes waiting to sync. ' : ''}Last synced ${when}.`;
+}
+
+async function restoreFromDrive() {
+  const data = await drive.pull((n, total) => toast(`Downloading photo ${n} of ${total}`));
+  if (!data) throw new Error('No Plant Care data in your Google Drive yet.');
+  const photos = [];
+  for (const p of data.photos) photos.push({ ...p, thumb: await resizeImage(p.blob, 480, 0.75) });
+  const meta = (data.meta || []).filter(m => !LOCAL_ONLY_META.includes(m.key));
+  meta.push({ key: 'userId', value: state.settings.userId }, { key: 'lastCloudSync', value: Date.now() }, { key: 'cloudDirty', value: false });
+  await db.replaceAll({ plants: data.plants || [], events: data.events || [], photos, meta });
+  for (const url of urlCache.values()) URL.revokeObjectURL(url);
+  urlCache.clear();
+  await load();
+}
+
+// After signing in: a phone with no plants offers to bring them back from Drive; otherwise upload.
+async function afterConnect() {
+  try { drive.auth.setEmail(await drive.whoAmI()); } catch { /* not essential */ }
+  if (!state.plants.length && await drive.hasBackup().catch(() => false)) {
+    if (await confirmSheet('Restore from Google Drive?', 'Your Drive has saved plants and photos. Bring them onto this phone?', 'Restore', false)) {
+      await restoreFromDrive();
+      toast(`Restored ${state.plants.length} plants`);
+      location.hash = '#/';
+      return render();
+    }
+  }
+  await markDirty();
+  syncNow();
+}
+
 // ---------- UI primitives ----------
 
 function toast(msg, action) {
@@ -269,7 +393,8 @@ function chip(s) {
 
 function viewHome() {
   const due = dueTasks();
-  const needsBackup = state.plants.length && (!state.settings.lastBackup || Date.now() - state.settings.lastBackup > 30 * DAY);
+  const needsBackup = state.plants.length && !drive.auth.connected && (!state.settings.lastBackup || Date.now() - state.settings.lastBackup > 30 * DAY);
+  const needsReconnect = drive.auth.connected && (sync.error === 'reconnect' || drive.auth.error);
   const plants = [...state.plants].sort((a, b) => a.name.localeCompare(b.name));
 
   return `
@@ -277,7 +402,8 @@ function viewHome() {
     <div><p class="eyebrow">${esc(new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }))}</p><h1>My plants</h1></div>
     <a class="icon-btn" href="#/settings" aria-label="Settings">${icon('gear')}</a>
   </header>
-  ${needsBackup ? `<a class="banner soft" href="#/settings">${icon('box')}<span>${state.settings.lastBackup ? "It's been a while since your last backup." : 'Back up your plants and photos.'}</span></a>` : ''}
+  ${needsReconnect ? `<button class="banner" data-act="drive-connect">${icon('cloud')}<span>Reconnect Google Drive to keep your plants backed up.</span></button>` : ''}
+  ${needsBackup ? `<a class="banner soft" href="#/settings">${icon('cloud')}<span>${clientId() ? 'Turn on Google Drive backup so nothing gets lost.' : state.settings.lastBackup ? "It's been a while since your last backup." : 'Back up your plants and photos.'}</span></a>` : ''}
   ${state.plants.length ? `
   <section>
     <h2>Today</h2>
@@ -434,13 +560,28 @@ function viewSettings() {
   <header class="top sub"><a class="icon-btn" href="#/" aria-label="Back">${icon('back')}</a><h1>Settings</h1><span></span></header>
   <div class="form">
     <section class="panel">
-      <h2>${icon('box')}Backup</h2>
-      <p class="muted">Your plants and photos are saved on this phone. A backup puts everything in one file you can save to iCloud Drive or Files, or send to yourself.</p>
-      <p class="small">${s.lastBackup ? `Last backup: ${esc(fmtLong(s.lastBackup))}` : 'No backup yet.'}</p>
-      <button class="btn primary block" data-act="backup">Back up now</button>
-      <button class="btn ghost block" data-act="restore">Restore from a backup</button>
+      <h2>${icon('cloud')}Google Drive</h2>
+      ${!clientId() ? '<p class="muted small">Google Drive sync is not set up yet.</p>'
+        : drive.auth.connected ? `
+      <p class="small">${drive.auth.email ? `Syncing to ${esc(drive.auth.email)}, in the Plant Care folder.` : 'Syncing to the Plant Care folder in your Drive.'}</p>
+      <p class="muted small" id="sync-status">${esc(syncStatusText())}</p>
+      ${sync.error === 'reconnect' || drive.auth.error || !drive.auth.token
+        ? '<button class="btn primary block" data-act="drive-connect">Reconnect</button>'
+        : '<button class="btn ghost block" data-act="drive-sync">Sync now</button>'}
+      <button class="btn ghost block" data-act="drive-restore">Restore from Google Drive</button>
+      <button class="btn danger-ghost block" data-act="drive-disconnect">Disconnect</button>`
+        : `
+      <p class="muted small">Saves your plants, care history and photos to your own Google Drive automatically after every change. If you get a new phone, sign in and everything comes back.</p>
+      <button class="btn primary block" data-act="drive-connect">Connect Google Drive</button>`}
     </section>
-    <p class="muted small center">Plant Care · ${state.plants.length} plants · ${state.photos.length} photos</p>
+    <section class="panel">
+      <h2>${icon('box')}Backup file</h2>
+      <p class="muted small">Saves everything in one file you can keep in iCloud Drive or Files.</p>
+      <p class="small">${s.lastBackup ? `Last backup file: ${esc(fmtLong(s.lastBackup))}` : 'No backup file yet.'}</p>
+      <button class="btn ghost block" data-act="backup">Save a backup file</button>
+      <button class="btn ghost block" data-act="restore">Restore from a file</button>
+    </section>
+    <p class="muted small center">Plant Care · ${state.plants.length} plant${state.plants.length === 1 ? '' : 's'} · ${state.photos.length} photo${state.photos.length === 1 ? '' : 's'}</p>
   </div>`;
 }
 
@@ -497,7 +638,7 @@ async function addPhotoFlow(plantId) {
     await savePhoto(plantId, file, fromDateInput(f.get('date')), f.get('note').trim());
     URL.revokeObjectURL(preview);
     close();
-    render();
+    changed();
   });
 }
 
@@ -515,13 +656,13 @@ function photoViewer(photoId) {
       plant.coverId = ph.id;
       await db.put('plants', plant);
       close();
-      render();
+      changed();
     };
     el.querySelector('[data-del]').onclick = async () => {
       close();
       if (await confirmSheet('Delete this photo?', "It will be removed from this plant's timeline.", 'Delete')) {
         await deletePhoto(ph.id);
-        render();
+        changed();
       }
     };
   });
@@ -581,6 +722,26 @@ async function onAction(btn) {
         btn.classList.add('has-photo');
         break;
       }
+      case 'drive-connect':
+        return drive.auth.signIn(clientId());
+      case 'drive-sync':
+        return syncNow({ manual: true });
+      case 'drive-restore':
+        if (await confirmSheet('Restore from Google Drive?', 'Everything on this phone will be replaced with what is saved in your Drive.', 'Restore')) {
+          btn.disabled = true;
+          await restoreFromDrive();
+          toast(`Restored ${state.plants.length} plants`);
+          location.hash = '#/';
+          render();
+        }
+        break;
+      case 'drive-disconnect':
+        if (await confirmSheet('Disconnect Google Drive?', 'Syncing stops. Your plants stay on this phone, and what is already in Drive stays there.', 'Disconnect')) {
+          drive.auth.disconnect();
+          sync.error = '';
+          render();
+        }
+        break;
       case 'backup':
         if (await exportBackup()) { toast('Backup saved'); render(); }
         break;
@@ -640,6 +801,7 @@ async function onPlantSubmit(form) {
 
 function changed() {
   render();
+  if (drive.auth.connected) markDirty().then(() => scheduleSync());
 }
 
 // ---------- routing ----------
@@ -678,8 +840,15 @@ $app.addEventListener('change', e => {
 });
 window.addEventListener('hashchange', render);
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') render();
+  if (document.visibilityState === 'visible') { render(); resumeSync(); }
 });
+
+// On opening the app: push anything that didn't sync, renewing the Google sign-in quietly if needed.
+function resumeSync() {
+  if (!drive.auth.connected || !state.settings.cloudDirty) return;
+  if (!drive.auth.token && clientId() && drive.auth.canTrySilent() && navigator.onLine) return drive.auth.signIn(clientId(), { silent: true });
+  syncNow();
+}
 
 // ---------- boot ----------
 
@@ -698,8 +867,11 @@ async function load() {
 async function boot() {
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(console.warn);
   navigator.storage?.persist?.().catch(() => {});
+  const reply = drive.auth.handleRedirect();
   await load();
   render();
+  if (reply === 'ok') afterConnect();
+  else resumeSync();
 }
 
 boot();

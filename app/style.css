@@ -283,3 +283,4 @@ input:focus, textarea:focus { outline: 2px solid var(--forest); outline-offset: 
 .group input.pill { min-height: 40px; padding: 6px var(--space-3); }
 .stepper button { height: 38px; font-size: 18px; }
 .group input.pill { text-align: left; color: var(--ink); }
+button.banner { width: 100%; border: 0; text-align: left; font: inherit; font-size: 14px; line-height: 22px; cursor: pointer; }
