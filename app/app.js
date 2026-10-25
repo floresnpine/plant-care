@@ -252,7 +252,9 @@ function confirmSheet(title, body, okLabel, danger = true) {
 
 function thumbHtml(plant, cls = 'thumb') {
   const ph = coverPhoto(plant);
-  return ph ? `<img class="${cls}" src="${photoUrl(ph)}" alt="">` : `<div class="${cls} placeholder">${icon('leaf')}</div>`;
+  // Plants without a photo get one of the soft accent tints, picked from the name so it stays put.
+  const tint = ['sage', 'indigo', 'ochre', 'rose'][[...plant.name].reduce((n, c) => n + c.charCodeAt(0), 0) % 4];
+  return ph ? `<img class="${cls}" src="${photoUrl(ph)}" alt="">` : `<div class="${cls} placeholder tint-${tint}">${icon('leaf')}</div>`;
 }
 
 function chip(s) {
@@ -260,7 +262,7 @@ function chip(s) {
   const tone = s.days < 0 ? 'late' : s.days === 0 ? 'due' : 'ok';
   const verb = TASKS[s.type].verb;
   const text = s.days < 0 ? 'Overdue' : s.days === 0 ? `${verb} today` : s.days === 1 ? `${verb} tomorrow` : `${verb} in ${s.days} days`;
-  return `<span class="chip ${tone}">${esc(s.type === 'water' && s.days < 0 ? 'Thirsty' : text)}</span>`;
+  return `<span class="chip ${tone} ${s.type}">${esc(s.type === 'water' && s.days < 0 ? 'Thirsty' : text)}</span>`;
 }
 
 // ---------- views ----------

@@ -4,6 +4,11 @@
   --ink: #262725; --ink-muted: #6A6C67; --ink-faint: #8E908A;
   --forest: #3B4A3B; --forest-hover: #2F3B2F; --forest-tint: #E3E8E2; --on-forest: #FFFFFF;
   --clay: #97553A; --clay-tint: #F3E6DF; --alert: #9A3B2F; --alert-tint: #F6E5E1;
+  /* secondary accents: indigo (ai) for watering, ochre for fertilizing, sage and rose for variety */
+  --indigo: #3F5468; --indigo-tint: #E3E8ED;
+  --ochre: #85672C; --ochre-tint: #F2EBDC;
+  --sage: #5F6E55; --sage-tint: #E8ECE3;
+  --rose: #8C5A5E; --rose-tint: #F3E7E7;
   --font-display: "Shippori Mincho", "Hiragino Mincho ProN", Georgia, serif;
   --font-body: "Zen Kaku Gothic New", "Hiragino Sans", system-ui, sans-serif;
   --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-6: 24px; --space-8: 32px; --space-12: 48px;
@@ -233,3 +238,25 @@ input:focus, textarea:focus { outline: 2px solid var(--forest); outline-offset: 
 .group .row.units { justify-content: flex-start; gap: var(--space-2); padding-top: 0; min-height: 0; padding-bottom: var(--space-3); border-top: 0; }
 .units button { flex: 1; min-height: 36px; border: 1px solid var(--line); border-radius: var(--radius-pill); background: transparent; font: 400 12px/16px var(--font-body); letter-spacing: .04em; color: var(--ink-muted); cursor: pointer; }
 .units button.on { background: var(--forest-tint); border-color: var(--forest-tint); color: var(--forest); }
+
+/* accent colours */
+.chip.ok.water { background: var(--indigo-tint); color: var(--indigo); }
+.chip.ok.fert { background: var(--ochre-tint); color: var(--ochre); }
+.sched.water .group-title, .sched.water .group-title .ico, .task-card.water .tc-head .ico, .history li.water > .ico { color: var(--indigo); }
+.sched.fert .group-title, .sched.fert .group-title .ico, .task-card.fert .tc-head .ico, .history li.fert > .ico { color: var(--ochre); }
+.sched.water .units button.on { background: var(--indigo-tint); border-color: var(--indigo-tint); color: var(--indigo); }
+.sched.fert .units button.on { background: var(--ochre-tint); border-color: var(--ochre-tint); color: var(--ochre); }
+.task-card.water { border-left: 3px solid var(--indigo); }
+.task-card.fert { border-left: 3px solid var(--ochre); }
+.task-card.off { border-left-color: var(--line); }
+.task.water .task-main strong::before, .task.fert .task-main strong::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin: 0 8px 2px 0; vertical-align: middle; }
+.task.water .task-main strong::before { background: var(--indigo); }
+.task.fert .task-main strong::before { background: var(--ochre); }
+.timeline li::before { background: var(--sage); }
+.placeholder.tint-sage { background: var(--sage-tint); color: var(--sage); }
+.placeholder.tint-indigo { background: var(--indigo-tint); color: var(--indigo); }
+.placeholder.tint-ochre { background: var(--ochre-tint); color: var(--ochre); }
+.placeholder.tint-rose { background: var(--rose-tint); color: var(--rose); }
+.banner { background: var(--rose-tint); color: var(--rose); }
+.banner .ico { color: var(--rose); }
+.notes { background: var(--sage-tint); }
