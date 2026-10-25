@@ -34,7 +34,7 @@ async function call(action, body = {}, s = load()) {
   try {
     res = await fetch(s.url, { method: 'POST', body: JSON.stringify({ action, key: s.key, ...body }) });
   } catch {
-    throw new Error('Could not reach Google. Check your connection.');
+    throw new Error(navigator.onLine ? 'Your script didn\'t answer. In Apps Script, check the deployment is a Web app with access for "Anyone".' : 'You\'re offline. It will sync when you\'re back online.');
   }
   const text = await res.text();
   let data;
