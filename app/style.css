@@ -260,3 +260,10 @@ input:focus, textarea:focus { outline: 2px solid var(--forest); outline-offset: 
 .banner { background: var(--rose-tint); color: var(--rose); }
 .banner .ico { color: var(--rose); }
 .notes { background: var(--sage-tint); }
+
+/* room picker */
+.field { display: grid; gap: var(--space-2); font: 500 14px/20px var(--font-body); }
+.rooms { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.rooms button { min-height: 36px; padding: 0 var(--space-3); border: 1px solid var(--line-strong); border-radius: var(--radius-pill); background: transparent; color: var(--ink); font: 400 14px/20px var(--font-body); cursor: pointer; }
+.rooms button.on { background: var(--forest-tint); border-color: var(--forest-tint); color: var(--forest); font-weight: 500; }
+.field input[hidden] { display: none; }

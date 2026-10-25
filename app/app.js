@@ -360,6 +360,8 @@ function viewPlant(id) {
   </div>`;
 }
 
+const ROOMS = ['Living room', 'Kitchen', 'Bedroom', 'Office', 'Guest room'];
+
 const UNITS = { day: ['day', 'days'], week: ['week', 'weeks'], month: ['month', 'months'] };
 const MAX_COUNT = { day: 365, week: 52, month: 12 };
 const unitLabel = (n, unit) => `${n} ${UNITS[unit][n === 1 ? 0 : 1]}`;
@@ -415,7 +417,9 @@ function viewEdit(id) {
   <form id="plant-form" class="form" autocomplete="off">
     ${p ? '' : `<button type="button" class="photo-pick" data-act="pick-cover"><span class="pp-inner">${icon('camera')}<span>Add a photo</span></span></button>`}
     <label>Name<input name="name" required maxlength="60" placeholder="Monstera" value="${esc(p?.name)}"></label>
-    <label><span class="lbl">Where it lives <span class="opt">optional</span></span><input name="location" maxlength="60" placeholder="Living room, east window" value="${esc(p?.location)}"></label>
+    <div class="field"><span class="lbl">Where it lives <span class="opt">optional</span></span>
+      <div class="rooms">${ROOMS.map(r => `<button type="button" class="${p?.location === r ? 'on' : ''}" data-act="room" data-room="${r}">${r}</button>`).join('')}<button type="button" class="${p?.location && !ROOMS.includes(p.location) ? 'on' : ''}" data-act="room" data-room="">Other</button></div>
+      <input name="location" maxlength="60" placeholder="e.g. hallway shelf" value="${esc(p?.location)}" aria-label="Where it lives" ${p?.location && !ROOMS.includes(p.location) ? '' : 'hidden'}></div>
     ${schedBlock('water', p ? p.waterEvery : 7, p?.waterUnit, p ? null : `<span>Last watered</span><input class="pill" name="lastWater" type="date" max="${today}" value="${today}">`)}
     ${schedBlock('fert', p ? p.fertEvery || 0 : 4, p ? p.fertUnit : 'week', p ? null : `<span>Last fertilized</span><input class="pill" name="lastFert" type="date" max="${today}">`)}
     <label><span class="lbl">Notes <span class="opt">optional</span></span><textarea name="notes" rows="3" maxlength="1000" placeholder="Likes bright indirect light, let soil dry out between waterings">${esc(p?.notes)}</textarea></label>
@@ -557,6 +561,16 @@ async function onAction(btn) {
           changed();
         }
         break;
+      case 'room': {
+        const input = btn.closest('.field').querySelector('input');
+        const other = btn.dataset.room === '';
+        const wasOn = btn.classList.contains('on');
+        btn.parentElement.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === btn && !wasOn));
+        input.value = other || wasOn ? '' : btn.dataset.room;
+        input.hidden = !(other && !wasOn);
+        if (!input.hidden) input.focus();
+        return;
+      }
       case 'step': return stepSched(btn.closest('.sched'), Number(btn.dataset.delta));
       case 'unit': return setUnit(btn.closest('.sched'), btn.dataset.unit);
       case 'pick-cover': {
