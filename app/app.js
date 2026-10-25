@@ -251,7 +251,6 @@ async function importBackup(file) {
 
 // ---------- Google Drive sync ----------
 
-const clientId = () => window.PLANT_CARE_CONFIG?.googleClientId || '';
 const sync = { busy: false, progress: '', error: '' };
 const LOCAL_ONLY_META = ['userId', 'cloudDirty', 'lastCloudSync'];
 
@@ -267,13 +266,7 @@ function scheduleSync(delay = 2500) {
 }
 
 async function syncNow({ manual = false } = {}) {
-  if (!drive.auth.connected || sync.busy) return;
-  if (!drive.auth.token) {
-    // Tokens last an hour. Renew quietly when the app opens, otherwise wait for a tap.
-    if (manual) return drive.auth.signIn(clientId());
-    sync.error = 'reconnect';
-    return render();
-  }
+  if (!drive.conn.connected || sync.busy) return;
   if (!manual && !state.settings.cloudDirty) return;
   sync.busy = true;
   sync.error = '';
@@ -291,8 +284,8 @@ async function syncNow({ manual = false } = {}) {
     if (manual) toast(uploaded ? `Synced, ${uploaded} new photo${uploaded === 1 ? '' : 's'} uploaded` : 'Synced to Google Drive');
   } catch (e) {
     console.warn('sync failed', e);
-    sync.error = e instanceof drive.AuthError ? 'reconnect' : 'Sync failed. It will try again next time.';
-    if (manual) toast(e instanceof drive.AuthError ? 'Google sign-in expired' : 'Sync failed, check your connection');
+    sync.error = e.message || 'Sync failed';
+    if (manual) toast(sync.error);
   } finally {
     sync.busy = false;
     sync.progress = '';
@@ -307,8 +300,7 @@ function updateSyncLabel() {
 
 function syncStatusText() {
   if (sync.busy) return sync.progress || 'Syncing…';
-  if (sync.error === 'reconnect' || drive.auth.error) return 'Sign-in expired. Tap Reconnect to keep syncing.';
-  if (sync.error) return sync.error;
+  if (sync.error) return `Last sync didn't finish: ${sync.error} It will try again automatically.`;
   const last = state.settings.lastCloudSync;
   if (!last) return 'Connected. First sync is on its way.';
   const mins = Math.round((Date.now() - last) / 60000);
@@ -331,9 +323,11 @@ async function restoreFromDrive() {
 
 // After signing in: a phone with no plants offers to bring them back from Drive; otherwise upload.
 async function afterConnect() {
-  try { drive.auth.setEmail(await drive.whoAmI()); } catch { /* not essential */ }
-  if (!state.plants.length && await drive.hasBackup().catch(() => false)) {
-    if (await confirmSheet('Restore from Google Drive?', 'Your Drive has saved plants and photos. Bring them onto this phone?', 'Restore', false)) {
+  if (await drive.hasBackup().catch(() => false)) {
+    const body = state.plants.length
+      ? 'Your Drive already has saved plants. Restore them onto this phone? This replaces what is on the phone now. Cancel keeps this phone and saves it to Drive instead.'
+      : 'Your Drive has saved plants and photos. Bring them onto this phone?';
+    if (await confirmSheet('Restore from Google Drive?', body, 'Restore', false)) {
       await restoreFromDrive();
       toast(`Restored ${state.plants.length} plants`);
       location.hash = '#/';
@@ -355,6 +349,7 @@ function toast(msg, action) {
 }
 
 function openSheet(html, bind) {
+  $toast.classList.remove('show');
   $sheet.innerHTML = `<div class="sheet-backdrop" data-close></div><div class="sheet-panel" role="dialog">${html}</div>`;
   $sheet.classList.add('open');
   const close = () => { $sheet.classList.remove('open'); setTimeout(() => { if (!$sheet.classList.contains('open')) $sheet.innerHTML = ''; }, 250); };
@@ -393,8 +388,8 @@ function chip(s) {
 
 function viewHome() {
   const due = dueTasks();
-  const needsBackup = state.plants.length && !drive.auth.connected && (!state.settings.lastBackup || Date.now() - state.settings.lastBackup > 30 * DAY);
-  const needsReconnect = drive.auth.connected && (sync.error === 'reconnect' || drive.auth.error);
+  const needsBackup = state.plants.length && !drive.conn.connected;
+  const syncTrouble = drive.conn.connected && sync.error && state.settings.cloudDirty;
   const plants = [...state.plants].sort((a, b) => a.name.localeCompare(b.name));
 
   return `
@@ -402,8 +397,8 @@ function viewHome() {
     <div><p class="eyebrow">${esc(new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }))}</p><h1>My plants</h1></div>
     <a class="icon-btn" href="#/settings" aria-label="Settings">${icon('gear')}</a>
   </header>
-  ${needsReconnect ? `<button class="banner" data-act="drive-connect">${icon('cloud')}<span>Reconnect Google Drive to keep your plants backed up.</span></button>` : ''}
-  ${needsBackup ? `<a class="banner soft" href="#/settings">${icon('cloud')}<span>${clientId() ? 'Turn on Google Drive backup so nothing gets lost.' : state.settings.lastBackup ? "It's been a while since your last backup." : 'Back up your plants and photos.'}</span></a>` : ''}
+  ${syncTrouble ? `<button class="banner" data-act="drive-sync">${icon('cloud')}<span>Some changes aren't in Google Drive yet. Tap to try again.</span></button>` : ''}
+  ${needsBackup ? `<a class="banner soft" href="#/settings">${icon('cloud')}<span>Turn on Google Drive backup so nothing gets lost.</span></a>` : ''}
   ${state.plants.length ? `
   <section>
     <h2>Today</h2>
@@ -561,17 +556,16 @@ function viewSettings() {
   <div class="form">
     <section class="panel">
       <h2>${icon('cloud')}Google Drive</h2>
-      ${!clientId() ? '<p class="muted small">Google Drive sync is not set up yet.</p>'
-        : drive.auth.connected ? `
-      <p class="small">${drive.auth.email ? `Syncing to ${esc(drive.auth.email)}, in the Plant Care folder.` : 'Syncing to the Plant Care folder in your Drive.'}</p>
+      ${drive.conn.connected ? `
+      <p class="small">Saving to the ${drive.conn.folder ? `<a class="link" href="${esc(drive.conn.folder)}" target="_blank" rel="noopener">Plant Care folder</a>` : 'Plant Care folder'} in your Drive after every change.</p>
       <p class="muted small" id="sync-status">${esc(syncStatusText())}</p>
-      ${sync.error === 'reconnect' || drive.auth.error || !drive.auth.token
-        ? '<button class="btn primary block" data-act="drive-connect">Reconnect</button>'
-        : '<button class="btn ghost block" data-act="drive-sync">Sync now</button>'}
+      <button class="btn ghost block" data-act="drive-sync">Sync now</button>
       <button class="btn ghost block" data-act="drive-restore">Restore from Google Drive</button>
+      <button class="btn ghost block" data-act="drive-code">Copy code for another phone</button>
       <button class="btn danger-ghost block" data-act="drive-disconnect">Disconnect</button>`
         : `
-      <p class="muted small">Saves your plants, care history and photos to your own Google Drive automatically after every change. If you get a new phone, sign in and everything comes back.</p>
+      <p class="muted small">Saves your plants, care history and photos to your own Google Drive automatically after every change. Paste the address of your Plant Care Apps Script, or a code copied from another phone.</p>
+      <input id="drive-url" type="url" inputmode="url" autocomplete="off" placeholder="https://script.google.com/macros/s/…/exec" aria-label="Apps Script address">
       <button class="btn primary block" data-act="drive-connect">Connect Google Drive</button>`}
     </section>
     <section class="panel">
@@ -722,8 +716,21 @@ async function onAction(btn) {
         btn.classList.add('has-photo');
         break;
       }
-      case 'drive-connect':
-        return drive.auth.signIn(clientId());
+      case 'drive-connect': {
+        const value = document.getElementById('drive-url')?.value || '';
+        if (!value.trim()) return toast('Paste the Apps Script address first');
+        btn.disabled = true;
+        btn.textContent = 'Connecting…';
+        await drive.connect(value);
+        toast('Connected to Google Drive');
+        render();
+        await afterConnect();
+        break;
+      }
+      case 'drive-code':
+        await navigator.clipboard.writeText(drive.conn.code);
+        toast('Copied. Paste it into Settings on your other phone.');
+        break;
       case 'drive-sync':
         return syncNow({ manual: true });
       case 'drive-restore':
@@ -737,7 +744,7 @@ async function onAction(btn) {
         break;
       case 'drive-disconnect':
         if (await confirmSheet('Disconnect Google Drive?', 'Syncing stops. Your plants stay on this phone, and what is already in Drive stays there.', 'Disconnect')) {
-          drive.auth.disconnect();
+          drive.conn.disconnect();
           sync.error = '';
           render();
         }
@@ -801,7 +808,7 @@ async function onPlantSubmit(form) {
 
 function changed() {
   render();
-  if (drive.auth.connected) markDirty().then(() => scheduleSync());
+  if (drive.conn.connected) markDirty().then(() => scheduleSync());
 }
 
 // ---------- routing ----------
@@ -843,11 +850,9 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') { render(); resumeSync(); }
 });
 
-// On opening the app: push anything that didn't sync, renewing the Google sign-in quietly if needed.
+// On opening the app: push anything that didn't sync last time.
 function resumeSync() {
-  if (!drive.auth.connected || !state.settings.cloudDirty) return;
-  if (!drive.auth.token && clientId() && drive.auth.canTrySilent() && navigator.onLine) return drive.auth.signIn(clientId(), { silent: true });
-  syncNow();
+  if (drive.conn.connected && state.settings.cloudDirty) syncNow();
 }
 
 // ---------- boot ----------
@@ -867,11 +872,9 @@ async function load() {
 async function boot() {
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(console.warn);
   navigator.storage?.persist?.().catch(() => {});
-  const reply = drive.auth.handleRedirect();
   await load();
   render();
-  if (reply === 'ok') afterConnect();
-  else resumeSync();
+  resumeSync();
 }
 
 boot();
