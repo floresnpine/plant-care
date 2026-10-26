@@ -846,7 +846,10 @@ $app.addEventListener('change', e => {
 });
 window.addEventListener('hashchange', render);
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') { render(); resumeSync(); }
+  if (document.visibilityState !== 'visible') return;
+  // Opening the photo picker hides the page, so don't redraw a form the person is filling in.
+  if (!['new', 'edit'].includes(route().view)) render();
+  resumeSync();
 });
 
 // On opening the app: push anything that didn't sync last time.
